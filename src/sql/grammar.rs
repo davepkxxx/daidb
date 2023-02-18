@@ -14,19 +14,26 @@ pub enum SqlGrammar {
     IdExpr(usize, usize, IdExpr),
 }
 
-impl From<(Range<usize>, &SqlLetter)> for SqlGrammar {
-    fn from((range, value): (Range<usize>, &SqlLetter)) -> Self {
-        let start = range.start;
-        let end = range.end;
+impl From<SqlGrammar> for Range<usize> {
+    fn from(value: SqlGrammar) -> Self {
         match value {
-            SqlLetter::Id(_, _, value) => Self::IdExpr(
-                start,
-                end,
-                IdExpr {
-                    value: value.to_string(),
-                },
-            ),
-            _ => Self::Letter(start, end, value.clone()),
+            SqlGrammar::Letter(start, end, _) => start..end,
+            SqlGrammar::Vec(start, end, _) => start..end,
+            SqlGrammar::CreateTableStmt(start, end, _) => start..end,
+            SqlGrammar::ColumnClause(start, end, _) => start..end,
+            SqlGrammar::IdExpr(start, end, _) => start..end,
+        }
+    }
+}
+
+impl From<SqlLetter> for SqlGrammar {
+    fn from(value: SqlLetter) -> Self {
+        let range: Range<usize> = value.clone().into();
+        match value {
+            SqlLetter::Id(_, _, text) => {
+                Self::IdExpr(range.start, range.end, IdExpr { value: text })
+            }
+            _ => Self::Letter(range.start, range.end, value),
         }
     }
 }
@@ -49,65 +56,81 @@ impl From<SqlGrammar> for Option<ColumnClause> {
     }
 }
 
-impl From<(Range<usize>, GrammarId, SqlGrammar)> for SqlGrammar {
-    fn from((range, grammar_id, value): (Range<usize>, GrammarId, SqlGrammar)) -> Self {
-        let start = range.start;
-        let end = range.end;
-        let grammars = match value {
-            SqlGrammar::Vec(_, _, g) => g,
-            _ => vec![value],
-        };
+impl From<(GrammarId, SqlGrammar)> for SqlGrammar {
+    fn from((grammar_id, value): (GrammarId, SqlGrammar)) -> Self {
         match grammar_id {
+            GrammarId::Letter => value,
             GrammarId::Vec => {
-                // let mut vec = vec![];
-                // for grammar in grammars {
-                //     match grammar {
-                //         SqlGrammar::Vec(_, _, children) => vec.extend(children.clone()),
-                //         _ => vec.push(grammar.clone()),
-                //     }
-                // }
-                SqlGrammar::Vec(start, end, grammars)
+                let range: Range<usize> = value.clone().into();
+                match value {
+                    SqlGrammar::Vec(start, end, grammars) => {
+                        let mut newval = vec![];
+                        for grammar in grammars {
+                            match grammar {
+                                SqlGrammar::Vec(_, _, children) => {
+                                    newval.extend(children.into_iter())
+                                }
+                                _ => newval.push(grammar),
+                            }
+                        }
+                        SqlGrammar::Vec(start, end, newval)
+                    }
+                    _ => SqlGrammar::Vec(range.start, range.end, vec![value]),
+                }
             }
             GrammarId::CreateTableStmt => {
-                for grammar in grammars.clone() {
-                    println!("found {} in create table statement", GrammarId::from(grammar).name());
+                let mut name_opt = None;
+                let mut columns = vec![];
+                let range: Range<usize> = value.clone().into();
+                for grammar in value.collect() {
+                    match grammar {
+                        SqlGrammar::ColumnClause(_, _, col) => columns.push(col),
+                        SqlGrammar::IdExpr(_, _, id_expr) => {
+                            if name_opt.is_none() {
+                                name_opt = Some(id_expr)
+                            }
+                        }
+                        _ => {}
+                    }
                 }
-                grammars
-                .iter()
-                .filter_map(|g| g.clone().into())
-                .collect::<Vec<IdExpr>>()
-                .get(0)
-                .map_or_else(
-                    || panic!("no table name in create table statement"),
-                    |name| {
-                        SqlGrammar::CreateTableStmt(
-                            start,
-                            end,
-                            CreateTableStmt {
-                                name: name.clone(),
-                                columns: grammars.iter().filter_map(|g| g.clone().into()).collect(),
-                            },
-                        )
-                    },
-                )
-            },
+                if let Some(name) = name_opt {
+                    SqlGrammar::CreateTableStmt(
+                        range.start,
+                        range.end,
+                        CreateTableStmt { name, columns },
+                    )
+                } else {
+                    panic!("no table name in create table statement")
+                }
+            }
             GrammarId::ColumnClause => {
-                let id_exprs: Vec<IdExpr> =
-                    grammars.iter().filter_map(|g| g.clone().into()).collect();
-                match (id_exprs.get(0), id_exprs.get(1)) {
+                let range: Range<usize> = value.clone().into();
+                let mut id_iter = value
+                    .collect()
+                    .into_iter()
+                    .filter_map(|g| g.into())
+                    .collect::<Vec<IdExpr>>()
+                    .into_iter();
+                match (id_iter.nth(0), id_iter.nth(1)) {
                     (Some(name), Some(data_type)) => SqlGrammar::ColumnClause(
-                        start,
-                        end,
-                        ColumnClause {
-                            name: name.clone(),
-                            data_type: data_type.clone(),
-                        },
+                        range.start,
+                        range.end,
+                        ColumnClause { name, data_type },
                     ),
                     (Some(_), None) => panic!("no data type in column clause"),
                     _ => panic!("no column name in column clause"),
                 }
             }
-            _ => panic!("cannot convert {} to SQL Grammar", grammar_id.name()),
+            GrammarId::IdExpr => {
+                if let SqlGrammar::Letter(_, _, letter) = value.clone() {
+                    return letter.into();
+                }
+                panic!(
+                    "no {} in {}",
+                    grammar_id.name(),
+                    GrammarId::from(value).name()
+                )
+            }
         }
     }
 }
@@ -124,35 +147,10 @@ impl SqlGrammar {
         }
     }
 
-    pub fn range(&self) -> Range<usize> {
+    fn collect(&self) -> Vec<Self> {
         match self {
-            Self::Letter(start, end, _) => *start..*end,
-            Self::Vec(start, end, _) => *start..*end,
-            Self::CreateTableStmt(start, end, _) => *start..*end,
-            Self::ColumnClause(start, end, _) => *start..*end,
-            Self::IdExpr(start, end, _) => *start..*end,
+            SqlGrammar::Vec(_, _, grammars) => grammars.clone(),
+            _ => vec![self.clone()],
         }
     }
-
-    pub fn start(&self) -> usize {
-        self.range().start
-    }
-
-    pub fn end(&self) -> usize {
-        self.range().end
-    }
 }
-
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-
-//     #[test]
-//     fn test_from() {
-//         assert!(
-//             matches!(SqlGrammar::from(GrammarId::CreateTableStmt, 53..57),
-//             SqlGrammar::CreateTable(start, end)
-//             if start == 53 && end == 57)
-//         );
-//     }
-// }

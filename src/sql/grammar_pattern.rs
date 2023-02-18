@@ -31,7 +31,7 @@ impl From<GrammarId> for GrammarPattern {
                 Box::new(Self::Grammar(GrammarId::IdExpr)),
                 Box::new(Self::Grammar(GrammarId::IdExpr)),
             ]),
-            GrammarId::IdExpr => Self::And(vec![Box::new(Self::Letter(LetterId::Id))]),
+            GrammarId::IdExpr => Self::Letter(LetterId::Id),
             _ => panic!("Cannot convert {} to GrammarPattern", value.name()),
         }
     }
@@ -44,20 +44,22 @@ impl GrammarPattern {
         n: usize,
     ) -> Result<(SqlGrammar, usize), SqlErr> {
         match self {
-            Self::Letter(pattern) => {
-                iter.next()
-                    .map_or(Err(SqlErr::Miss(n, pattern.name().to_string())), |letter| {
-                        if letter.is(pattern) {
-                            Ok((
-                                SqlGrammar::Letter(n, letter.end(), letter.clone()),
-                                letter.end(),
-                            ))
-                        } else {
-                            Err(SqlErr::Miss(n, pattern.name().to_string()))
-                        }
-                    })
-            }
-            Self::Grammar(pattern) => Self::from(pattern.clone()).try_match(iter, n),
+            Self::Letter(letter_id) => iter.next().map_or(
+                Err(SqlErr::Miss(n, letter_id.name().to_string())),
+                |letter| {
+                    if letter.is(letter_id) {
+                        Ok((
+                            SqlGrammar::Letter(n, letter.end(), letter.clone()),
+                            letter.end(),
+                        ))
+                    } else {
+                        Err(SqlErr::Miss(n, letter_id.name().to_string()))
+                    }
+                },
+            ),
+            Self::Grammar(grammar_id) => Self::from(grammar_id.clone())
+                .try_match(iter, n)
+                .and_then(|(grammar, end)| Ok(((grammar_id.clone(), grammar).into(), end))),
             Self::And(patterns) => {
                 let mut i = n;
                 let mut grammars = vec![];
@@ -70,14 +72,14 @@ impl GrammarPattern {
                         Err(err) => return Err(err),
                     }
                 }
-                Ok((SqlGrammar::Vec(n, i, grammars), i))
+                Ok(((GrammarId::Vec, SqlGrammar::Vec(n, i, grammars)).into(), i))
             }
-            Self::Any(pattern) => {
+            Self::Any(patterns) => {
                 let mut grammars = vec![];
                 let mut i = n;
                 loop {
                     let mut cloned_iter = iter.clone();
-                    match pattern.try_match(&mut cloned_iter, i) {
+                    match patterns.try_match(&mut cloned_iter, i) {
                         Ok((grammar, end)) => {
                             while i < end {
                                 match iter.next() {
@@ -88,7 +90,12 @@ impl GrammarPattern {
                             grammars.push(grammar);
                             i = end;
                         }
-                        Err(_) => return Ok((SqlGrammar::Vec(n, i, grammars), i)),
+                        Err(_) => {
+                            return Ok((
+                                (GrammarId::Vec, SqlGrammar::Vec(n, i, grammars)).into(),
+                                i,
+                            ))
+                        }
                     }
                 }
             }

@@ -13,6 +13,20 @@ pub enum SqlLetter {
     Skip(usize, usize, String),
 }
 
+impl From<SqlLetter> for Range<usize> {
+    fn from(value: SqlLetter) -> Self {
+        match value {
+            SqlLetter::Create(start, end, _) => start..end,
+            SqlLetter::Table(start, end, _) => start..end,
+            SqlLetter::Comma(start, end, _) => start..end,
+            SqlLetter::ParenL(start, end, _) => start..end,
+            SqlLetter::ParenR(start, end, _) => start..end,
+            SqlLetter::Id(start, end, _) => start..end,
+            SqlLetter::Skip(start, end, _) => start..end,
+        }
+    }
+}
+
 impl From<(LetterId, Range<usize>, &str)> for SqlLetter {
     fn from((id, range, value): (LetterId, Range<usize>, &str)) -> Self {
         let start = range.start;
@@ -44,24 +58,12 @@ impl SqlLetter {
         }
     }
 
-    pub fn range(&self) -> Range<usize> {
-        match self {
-            Self::Create(start, end, _) => *start..*end,
-            Self::Table(start, end, _) => *start..*end,
-            Self::Comma(start, end, _) => *start..*end,
-            Self::ParenL(start, end, _) => *start..*end,
-            Self::ParenR(start, end, _) => *start..*end,
-            Self::Id(start, end, _) => *start..*end,
-            Self::Skip(start, end, _) => *start..*end,
-        }
-    }
-
     pub fn start(&self) -> usize {
-        self.range().start
+        Range::<usize>::from(self.clone()).start
     }
 
     pub fn end(&self) -> usize {
-        self.range().end
+        Range::<usize>::from(self.clone()).end
     }
 }
 
